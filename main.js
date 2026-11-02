@@ -221,8 +221,12 @@ class EcovacsDeebot extends utils.Adapter {
         if (String(this.config.verificationCode || '').trim() === 'DRYRUN') {
             const pw = this._plainPassword || '';
             const looksLikeMD5 = /^[0-9a-f]{32}$/.test(pw);
-            this.log.info(`[DRYRUN] email="${this.config.email}", country="${this.config.countrycode}"`);
+            const drySession = this._loadSession() || {};
+            const dryCountry = this.config.countrycode.toUpperCase();
+            const dryApi = new EcoVacsAPI('dummy', dryCountry);
+            this.log.info(`[DRYRUN] email="${this.config.email}", country="${dryCountry}", continent="${dryApi.continent}"`);
             this.log.info(`[DRYRUN] password: length=${pw.length}, first2="${pw.substring(0, 2)}", looksLikeMD5=${looksLikeMD5}`);
+            this.log.info(`[DRYRUN] deviceId in session: ${drySession.deviceId || '(none yet)'}`);
             this.log.info('[DRYRUN] No login attempted. Remove DRYRUN from verificationCode to proceed.');
             return;
         }
@@ -248,15 +252,17 @@ class EcovacsDeebot extends utils.Adapter {
         }
         const deviceId = session.deviceId;
 
-        const continent = (ecovacsDeebot.countries)[this.config.countrycode.toUpperCase()].continent.toLowerCase();
-
+        // Match login-test.js exactly: uppercase country, no explicit continent
+        // (library derives it via getContinent()), authDomain only when configured.
+        const country = this.config.countrycode.toUpperCase();
         let authDomain = '';
         if (this.getConfigValue('authDomain') !== '') {
             authDomain = this.getConfigValue('authDomain');
             this.log.info(`Using login: ${authDomain}`);
         }
 
-        const api = new EcoVacsAPI(deviceId, this.config.countrycode, continent, authDomain);
+        const api = new EcoVacsAPI(deviceId, country, '', authDomain);
+        const continent = api.continent;  // derived from country by the library
 
         // Restore saved credentials when still valid
         if (session.userId && session.token && session.expiresAt) {
