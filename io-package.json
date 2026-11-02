@@ -122,12 +122,15 @@
         ],
         "adminUI": {
           "config": "materialize"
-        }
+        },
+        "encryptedNative": ["password"],
+        "protectedNative": ["password"]
     },
     "license": "MIT",
     "native": {
         "email": "",
         "password": "",
+        "verificationCode": "",
         "countrycode": "de",
         "deviceNumber": 0,
         "authDomain": "",

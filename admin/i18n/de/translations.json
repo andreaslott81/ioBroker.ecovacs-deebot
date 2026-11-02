@@ -2,6 +2,7 @@
     "areas": "Bereiche",
     "countrycode": "Land",
     "deviceNumber": "Gerät Nr.",
+    "verificationCode": "E-Mail-Verifizierungscode (nach Erhalt eintragen, dann Adapter neu starten)",
     "disable": "deaktivieren",
     "doNotSynchronize": "Nicht synchronisieren",
     "email": "E-Mail oder Ecovacs-ID",

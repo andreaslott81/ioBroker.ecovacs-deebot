@@ -2,6 +2,7 @@
     "areas": "areas",
     "countrycode": "Country",
     "deviceNumber": "Device number",
+    "verificationCode": "E-mail verification code (enter after receiving the code, then restart the adapter)",
     "disable": "disabled",
     "doNotSynchronize": "Do not synchronize",
     "email": "Email or Ecovacs ID",

@@ -1,5 +1,7 @@
 'use strict';
 
+const path = require('path');
+const fs = require('fs');
 const utils = require('@iobroker/adapter-core');
 const ecovacsDeebot = require('ecovacs-deebot');
 const nodeMachineId = require('node-machine-id');
@@ -10,6 +12,7 @@ const Model = require('./lib/deebotModel');
 const Device = require('./lib/device');
 const Queue = require('./lib/adapterQueue');
 const EcoVacsAPI = ecovacsDeebot.EcoVacsAPI;
+const { DeviceVerificationRequired } = ecovacsDeebot;
 const mapObjects = require('./lib/mapObjects');
 const mapHelper = require('./lib/mapHelper');
 
@@ -88,7 +91,7 @@ class EcovacsDeebot extends utils.Adapter {
 
         this.pollingInterval = 120000;
 
-        this.password = '';
+        this._codeRequestedThisRun = false;
     }
 
     async onReady() {
@@ -97,15 +100,8 @@ class EcovacsDeebot extends utils.Adapter {
         // Reset the connection indicator during startup
         this.setStateConditional('info.connection', false, true);
 
-        this.getForeignObject('system.config', (err, obj) => {
-            if (obj && obj.native && obj.native.secret) {
-                this.password = helper.decrypt(obj.native.secret, this.config.password);
-                this.connect();
-            } else {
-                this.error('Error reading config. Please check adapter config.');
-            }
-        });
         this.subscribeStates('*');
+        await this.connect();
     }
 
     onUnload(callback) {
@@ -142,10 +138,42 @@ class EcovacsDeebot extends utils.Adapter {
         this.retries++;
         this.setConnection(false);
         this.log.info('Reconnecting (' + this.retries + ') ...');
-        this.connect();
+        this.connect().catch((e) => {
+            this.connectionFailed = true;
+            this.error(e.message, true);
+        });
     }
 
-    connect() {
+    // --- Session file helpers ---
+
+    _getSessionFilePath() {
+        return path.join(utils.getAbsoluteInstanceDataDir(this), 'ecovacs-session.json');
+    }
+
+    _loadSession() {
+        try {
+            const raw = fs.readFileSync(this._getSessionFilePath(), 'utf8');
+            return JSON.parse(raw);
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    _saveSession(data) {
+        try {
+            const dir = utils.getAbsoluteInstanceDataDir(this);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+            fs.writeFileSync(this._getSessionFilePath(), JSON.stringify(data, null, 2), 'utf8');
+        } catch (e) {
+            this.log.warn(`Failed to save session file: ${e.message}`);
+        }
+    }
+
+    // ----------------------------
+
+    async connect() {
         this.connectionFailed = false;
         this.resetErrorStates();
 
@@ -162,8 +190,14 @@ class EcovacsDeebot extends utils.Adapter {
             this.pollingInterval = Number(this.config.pollingInterval);
         }
 
-        const password_hash = EcoVacsAPI.md5(this.password);
-        const deviceId = EcoVacsAPI.getDeviceId(nodeMachineId.machineIdSync(), this.config.deviceNumber);
+        // Load persisted session; generate or restore deviceId
+        let session = this._loadSession() || {};
+        if (!session.deviceId) {
+            session.deviceId = EcoVacsAPI.getDeviceId(nodeMachineId.machineIdSync(), this.config.deviceNumber);
+            this._saveSession(session);
+        }
+        const deviceId = session.deviceId;
+
         const continent = (ecovacsDeebot.countries)[this.config.countrycode.toUpperCase()].continent.toLowerCase();
 
         let authDomain = '';
@@ -173,8 +207,85 @@ class EcovacsDeebot extends utils.Adapter {
         }
 
         const api = new EcoVacsAPI(deviceId, this.config.countrycode, continent, authDomain);
-        api.connect(this.config.email, password_hash).then(() => {
-            api.devices().then((devices) => {
+
+        // Restore saved credentials when still valid
+        if (session.userId && session.token && session.expiresAt) {
+            api.setCredentials({ userId: session.userId, token: session.token, expiresAt: session.expiresAt });
+        }
+
+        if (!api.isTokenValid()) {
+            // Need a fresh login
+            try {
+                await api.connect(this.config.email, this.config.password);
+            } catch (e) {
+                if (e instanceof DeviceVerificationRequired) {
+                    this.log.warn('Device verification required (HIGH_RISK).');
+
+                    const now = Date.now();
+                    const lastRequest = session.lastCodeRequestTime || 0;
+                    const TEN_MIN = 10 * 60 * 1000;
+
+                    if (this._codeRequestedThisRun || (now - lastRequest < TEN_MIN)) {
+                        const waitSec = Math.ceil((TEN_MIN - (now - lastRequest)) / 1000);
+                        this.log.warn(`Verification code already requested this run or within last 10 minutes. Not requesting again (wait ${waitSec}s). Enter the code in the adapter settings.`);
+                    } else {
+                        this._codeRequestedThisRun = true;
+                        try {
+                            await api.requestDeviceVerificationCode();
+                            session.lastCodeRequestTime = Date.now();
+                            session.lastVerifyId = api._verifyId || '';
+                            this._saveSession(session);
+                            this.log.info('Verification code sent by e-mail. Enter it in the adapter settings field "verificationCode" and restart the adapter.');
+                        } catch (reqErr) {
+                            this.log.error(`Failed to request verification code: ${reqErr.message}`);
+                        }
+                    }
+
+                    // Restore _verifyId from session if we didn't just request a fresh one
+                    if (!api._verifyId && session.lastVerifyId) {
+                        api._verifyId = session.lastVerifyId;
+                        api._riskTicket = e.riskTicket || api._riskTicket || '';
+                    }
+
+                    const code = this.config.verificationCode ? String(this.config.verificationCode).trim() : '';
+                    if (code) {
+                        this.log.info('Verification code found in config. Attempting device verification ...');
+                        try {
+                            await api.verifyDevice(code);
+                            this.log.info('Device verification successful.');
+                        } catch (verifyErr) {
+                            this.connectionFailed = true;
+                            this.error(`Device verification failed: ${verifyErr.message}`, true);
+                            return;
+                        }
+                    } else {
+                        this.connectionFailed = true;
+                        this.error('Waiting for verification code in adapter settings. Enter the code from the e-mail and restart the adapter.', true);
+                        return;
+                    }
+                } else {
+                    this.connectionFailed = true;
+                    this.error(e.message, true);
+                    return;
+                }
+            }
+        } else {
+            this.log.info('Restored valid session from file. Skipping login.');
+        }
+
+        // Save credentials and start auto-refresh whenever the token changes
+        api.on('credentialsUpdated', (creds) => {
+            session.userId = creds.userId;
+            session.token = creds.token;
+            session.expiresAt = creds.expiresAt;
+            this._saveSession(session);
+            this.log.debug('Session credentials updated and saved.');
+        });
+
+        api.enableAutoTokenRefresh(this.config.email, this.config.password);
+
+        try {
+            const devices = await api.devices();
 
                 const numberOfDevices = Object.keys(devices).length;
                 if (numberOfDevices === 0) {
@@ -1318,11 +1429,10 @@ class EcovacsDeebot extends utils.Adapter {
                         this.vacbotGetStatesInterval();
                     }, this.pollingInterval);
                 }
-            });
-        }).catch((e) => {
+        } catch (e) {
             this.connectionFailed = true;
             this.error(e.message, true);
-        });
+        }
     }
 
     setConnection(value) {

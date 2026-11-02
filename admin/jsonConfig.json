@@ -89,6 +89,14 @@
           "sm": 12,
           "md": 6,
           "lg": 6
+        },
+        "verificationCode": {
+          "newLine": true,
+          "type": "text",
+          "label": "verificationCode",
+          "sm": 12,
+          "md": 6,
+          "lg": 6
         }
       }
     },
