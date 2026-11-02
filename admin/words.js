@@ -25,6 +25,11 @@ systemDictionary = {
         "de": "Gerät Nr.",
         "ru": "Номер устройства"
     },
+    "verificationCode": {
+        "en": "E-mail verification code (enter after receiving, then restart adapter)",
+        "de": "E-Mail-Verifizierungscode (nach Erhalt eintragen, dann Adapter neu starten)",
+        "ru": "Код подтверждения по электронной почте"
+    },
     "login": {
         "en": "Login",
         "de": "Anmeldung",
