@@ -310,12 +310,14 @@ class EcovacsDeebot extends utils.Adapter {
                             await api.verifyDevice(code);
                             this.log.info('Device verification successful.');
                         } catch (verifyErr) {
-                            this.connectionFailed = true;
+                            // Invalid code or expired — block reconnect; user must enter a new code
+                            this.permanentAuthError = true;
                             this.error(`Device verification failed: ${verifyErr.message}`, true);
                             return;
                         }
                     } else {
-                        this.connectionFailed = true;
+                        // No code yet — block reconnect until user saves settings with the code
+                        this.permanentAuthError = true;
                         this.error('Waiting for verification code in adapter settings. Enter the code from the e-mail and restart the adapter.', true);
                         return;
                     }
@@ -342,6 +344,24 @@ class EcovacsDeebot extends utils.Adapter {
             session.expiresAt = creds.expiresAt;
             this._saveSession(session);
             this.log.debug('Session credentials updated and saved.');
+        });
+
+        // Handle token-refresh errors from the library's auto-refresh timer.
+        // DeviceVerificationRequired: library already disabled auto-refresh; just warn.
+        // Auth errors (wrong password, account locked): block reconnect permanently.
+        // Other transient errors: library retries after 5 min; just log.
+        api.on('credentialsRefreshError', (e) => {
+            if (e instanceof DeviceVerificationRequired) {
+                this.log.warn('Token refresh requires device re-verification — auto-refresh disabled. Restart adapter and enter a new verification code.');
+                this.permanentAuthError = true;
+            } else if (this._isAuthError(e)) {
+                this.log.error(`Token refresh failed with auth error: ${e.message}`);
+                this.log.error('Auto-refresh stopped. Fix credentials and restart the adapter.');
+                this.permanentAuthError = true;
+                api.disableAutoTokenRefresh();
+            } else {
+                this.log.warn(`Token refresh failed (will retry in 5 min): ${e.message}`);
+            }
         });
 
         api.enableAutoTokenRefresh(this.config.email, this._plainPassword);
