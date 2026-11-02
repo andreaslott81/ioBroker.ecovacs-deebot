@@ -92,6 +92,7 @@ class EcovacsDeebot extends utils.Adapter {
         this.pollingInterval = 120000;
 
         this._codeRequestedThisRun = false;
+        this.permanentAuthError = false;
     }
 
     async onReady() {
@@ -133,6 +134,10 @@ class EcovacsDeebot extends utils.Adapter {
     }
 
     reconnect() {
+        if (this.permanentAuthError) {
+            this.log.warn('Reconnect suppressed: permanent auth error is set. Fix credentials and restart.');
+            return;
+        }
         this.clearGoToPosition();
         this.retrypauseTimeout = null;
         this.retries++;
@@ -142,6 +147,16 @@ class EcovacsDeebot extends utils.Adapter {
             this.connectionFailed = true;
             this.error(e.message, true);
         });
+    }
+
+    // Returns true for errors that indicate bad credentials or a locked account.
+    // These must NOT trigger a reconnect attempt.
+    _isAuthError(e) {
+        const msg = e && e.message ? e.message : '';
+        return (
+            msg.includes('Incorrect account id or password') ||
+            /Failure code (1013|10101|10102)/.test(msg)
+        );
     }
 
     // --- Session file helpers ---
@@ -181,6 +196,11 @@ class EcovacsDeebot extends utils.Adapter {
             this.error('Missing values in adapter config', true);
             return;
         }
+
+        // Diagnostic: confirm the password is arriving as plain text (never log the full password)
+        const pw = this.config.password || '';
+        this.log.debug(`[connect] password length=${pw.length}, first 2 chars="${pw.substring(0, 2)}"`);
+
         if (this.config.deviceNumber) {
             this.deviceNumber = Number(this.config.deviceNumber);
         } else {
@@ -263,6 +283,12 @@ class EcovacsDeebot extends utils.Adapter {
                         this.error('Waiting for verification code in adapter settings. Enter the code from the e-mail and restart the adapter.', true);
                         return;
                     }
+                } else if (this._isAuthError(e)) {
+                    this.permanentAuthError = true;
+                    this.log.error(`Login failed (credentials/account error): ${e.message}`);
+                    this.log.error('Not retrying — fix credentials in adapter settings and restart the adapter.');
+                    this.error(e.message, true);
+                    return;
                 } else {
                     this.connectionFailed = true;
                     this.error(e.message, true);
@@ -1430,7 +1456,13 @@ class EcovacsDeebot extends utils.Adapter {
                     }, this.pollingInterval);
                 }
         } catch (e) {
-            this.connectionFailed = true;
+            if (this._isAuthError(e)) {
+                this.permanentAuthError = true;
+                this.log.error(`Login failed (credentials/account error): ${e.message}`);
+                this.log.error('Not retrying — fix credentials in adapter settings and restart the adapter.');
+            } else {
+                this.connectionFailed = true;
+            }
             this.error(e.message, true);
         }
     }
