@@ -93,6 +93,7 @@ class EcovacsDeebot extends utils.Adapter {
 
         this._codeRequestedThisRun = false;
         this.permanentAuthError = false;
+        this._plainPassword = '';
     }
 
     async onReady() {
@@ -102,6 +103,9 @@ class EcovacsDeebot extends utils.Adapter {
         this.setStateConditional('info.connection', false, true);
 
         this.subscribeStates('*');
+
+        // The materialize admin XOR-encrypts passwords; decrypt before using.
+        this._plainPassword = await this._getDecryptedPassword();
         await this.connect();
     }
 
@@ -159,6 +163,22 @@ class EcovacsDeebot extends utils.Adapter {
         );
     }
 
+    // Decrypts the password from the materialize admin UI.
+    // The materialize admin XOR-encrypts the password with system.config.native.secret
+    // before saving; we must reverse that to obtain the plain text.
+    _getDecryptedPassword() {
+        return new Promise((resolve) => {
+            this.getForeignObject('system.config', (err, obj) => {
+                if (obj && obj.native && obj.native.secret) {
+                    resolve(helper.decrypt(obj.native.secret, this.config.password));
+                } else {
+                    this.log.warn('system.config secret not found — using config.password as-is');
+                    resolve(this.config.password || '');
+                }
+            });
+        });
+    }
+
     // --- Session file helpers ---
 
     _getSessionFilePath() {
@@ -197,8 +217,18 @@ class EcovacsDeebot extends utils.Adapter {
             return;
         }
 
-        // Diagnostic: confirm the password is arriving as plain text (never log the full password)
-        const pw = this.config.password || '';
+        // DRYRUN: log diagnostics without attempting a login
+        if (String(this.config.verificationCode || '').trim() === 'DRYRUN') {
+            const pw = this._plainPassword || '';
+            const looksLikeMD5 = /^[0-9a-f]{32}$/.test(pw);
+            this.log.info(`[DRYRUN] email="${this.config.email}", country="${this.config.countrycode}"`);
+            this.log.info(`[DRYRUN] password: length=${pw.length}, first2="${pw.substring(0, 2)}", looksLikeMD5=${looksLikeMD5}`);
+            this.log.info('[DRYRUN] No login attempted. Remove DRYRUN from verificationCode to proceed.');
+            return;
+        }
+
+        // Debug: confirm password length/prefix (never log full password)
+        const pw = this._plainPassword || '';
         this.log.debug(`[connect] password length=${pw.length}, first 2 chars="${pw.substring(0, 2)}"`);
 
         if (this.config.deviceNumber) {
@@ -236,7 +266,7 @@ class EcovacsDeebot extends utils.Adapter {
         if (!api.isTokenValid()) {
             // Need a fresh login
             try {
-                await api.connect(this.config.email, this.config.password);
+                await api.connect(this.config.email, this._plainPassword);
             } catch (e) {
                 if (e instanceof DeviceVerificationRequired) {
                     this.log.warn('Device verification required (HIGH_RISK).');
@@ -308,7 +338,7 @@ class EcovacsDeebot extends utils.Adapter {
             this.log.debug('Session credentials updated and saved.');
         });
 
-        api.enableAutoTokenRefresh(this.config.email, this.config.password);
+        api.enableAutoTokenRefresh(this.config.email, this._plainPassword);
 
         try {
             const devices = await api.devices();

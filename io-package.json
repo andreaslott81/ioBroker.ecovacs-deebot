@@ -122,9 +122,7 @@
         ],
         "adminUI": {
           "config": "materialize"
-        },
-        "encryptedNative": ["password"],
-        "protectedNative": ["password"]
+        }
     },
     "license": "MIT",
     "native": {
